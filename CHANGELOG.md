@@ -4,7 +4,212 @@ All notable changes to IngeTrazo are documented here.
 Format inspired by [Keep a Changelog](https://keepachangelog.com); versions
 follow [SemVer](https://semver.org).
 
-## [Sin publicar]
+## [0.5.6] — 2026-09-29
+
+**Render con Blender, una pestaña para la IA y los aportes de la comunidad.**
+IngeTrazo renderiza imágenes fotorrealistas con el Blender que ya tengas
+instalado, de día o de noche con luces propias, y puede renderizar sola la
+vista cada vez que te detienes al recorrer el modelo. El Asistente IA y el
+puente MCP viven ahora en una pestaña de la barra lateral, y Ventana ▸ Paneles
+deja ocultar las pestañas que no uses. De la comunidad llegan el buscador de
+comandos F3, la API de extensiones 2, importar STL, Pegar en su lugar y Zoom a
+la selección. Y una tanda de reportes resueltos, incluido el transportador que
+en milímetros o pulgadas no daba el ángulo tecleado.
+
+### Añadido
+- **Renderizar con Blender** (#181), una pestaña de la barra lateral:
+  - Usa el Blender del sistema (EEVEE o Cycles); si no lo encuentra, explica
+    cómo instalarlo según el paquete (Windows, Mac, AppImage, Flatpak).
+  - **Ambiente** de día (el sol del panel Sombras, con su intensidad), de
+    noche o nublado.
+  - **Luces puntuales y focos** que se colocan con un clic sobre el modelo,
+    con temperatura de color (Kelvin), potencia, apertura y orientación; se
+    guardan en el documento y se deshacen con Ctrl+Z.
+  - **Acabados para el render** en cada material (vidrio, agua, metal,
+    brillante…), desde el clic derecho sobre la muestra; «Automático»
+    lo adivina por el nombre.
+  - Las figuras que miran a la cámara (Sumari, árboles de imagen) salen de
+    frente y recortadas.
+  - La imagen se abre en su propia ventana, con zoom, Guardar y Abrir carpeta.
+  - **Sincronizar con la vista**: con Blender abierto en segundo plano, cada
+    vez que la cámara se detiene sale un borrador de lo que ves en uno o dos
+    segundos; editar el modelo recarga la escena.
+- **Pestaña IA**: el Asistente IA y el puente MCP en la barra lateral. El
+  prompt admite varias líneas (Enter envía, Mayús+Enter salta de línea);
+  Ctrl+Mayús+A trae la pestaña aunque esté oculta.
+- **Ventana ▸ Paneles**: todas las pestañas de la barra lateral, también las
+  de extensiones, para ocultarlas o mostrarlas; la misma lista con clic
+  derecho sobre las pestañas. Lo oculto se recuerda al reabrir.
+- **Buscador de comandos (F3)**, como en Blender: escribe unas letras, con
+  iniciales o errores de tecleo, y Enter ejecuta. Una letra tecleada en un
+  menú abierto busca en ese menú; el compositor tiene el suyo (#168,
+  @canalsecuario-blip). La barra de estado lo menciona al abrir el programa.
+- **Importar STL** (binario y de texto) con la unidad del modelo y la unión
+  de caras planas, leído en segundo plano; y **Edición ▸ Simplificar malla**
+  (#161, @kagehak).
+- **API de extensiones 2**: varios paneles con nombre por extensión que
+  vuelven a su lugar, dibujo sobre el visor con `world_to_pixels`, tipos de
+  archivo propios y espacios de trabajo (#141, @felixriestra). Además, varias
+  extensiones pueden compartir una pestaña y añadir entradas al menú
+  Extensiones; la guía explica dónde conviene poner la interfaz de cada una.
+- **Pegar en su lugar** (Ctrl+Alt+V), dentro de cualquier grupo (#188), y
+  **Zoom a la selección** (#193) (@canalsecuario-blip).
+- **Supr borra la arista o cara bajo el cursor**, sin seleccionarla; Retroceso
+  borra sólo la selección (#98, @canalsecuario-blip).
+- **Importar DWG en Windows, macOS y el Flatpak**: el conversor de LibreDWG
+  va dentro de todos los paquetes (#101, #180).
+- **Traducción al italiano** (#182, @deedend) y portugués de Brasil al día
+  (#186, @dafrobozao).
+- En Ayuda ▸ Acerca de, los créditos se detienen al pasar el ratón y se
+  recorren con la rueda.
+
+### Corregido
+- **Un ángulo, un factor de escala o un número de lados tecleado se escalaba
+  con la unidad del documento**: en milímetros, «45» en Rotar giraba 0,045°
+  (#176, reporte de Esteban Penzo).
+- **Una arista copiada con Mover a través de una cara no la dividía** (#177,
+  reporte de Lefteris Schetakis).
+- **Ctrl+Z a mitad de una línea** deja la cadena en el vértice anterior en vez
+  de seguir desde un punto que ya no existe (#175, @pacaeiro).
+- **La Cinta métrica cambiaba de modo con Ctrl+Z**: ahora sólo con un toque de
+  Ctrl (#183); no crea guías de longitud cero ni recorta su vista previa
+  (#173, #174, @pacaeiro).
+- **El pan era lentísimo con el zoom al máximo**: se mide por la profundidad
+  de lo que está bajo el cursor (#184).
+- **Valores no finitos** (un número enorme en el cuadro de medidas) ya no
+  bloquean las herramientas ni se guardan en el documento (#185, primera
+  parte). Reportes de Alejandro Limón.
+- **La cota en cadena del compositor** seguía cortándose tras cada tramo
+  (#187, @tonfdd).
+- **La barra de herramientas muestra el atajo configurado**, no el de
+  fábrica (#171, @pacaeiro).
+- **Rectángulo**: la inferencia de cuadrado engancha (#169, #170, @pacaeiro).
+- **El cursor de Empujar/Tirar desaparecía en Windows** tras usarlo (#191).
+- **El Asistente IA en Mac no conectaba** (`CERTIFICATE_VERIFY_FAILED`): usa
+  los certificados del sistema, sin desactivar la verificación (#198,
+  diagnóstico de @troya2).
+- El diálogo de cambios sin guardar y los botones estándar de Qt salen en el
+  idioma del programa (#154, @canalsecuario-blip).
+
+### Antivirus
+- El instalador de Windows se construye con un cargador de PyInstaller
+  compilado por nosotros, lo que reduce los falsos positivos de Windows
+  Defender (#162). La firma digital (SignPath) está en trámite.
+
+### Pruebas antes de publicar
+`scripts/release_check.sh v0.5.5` sobre `plaza.igz`
+(`benchmarks/results/0.5.6.json`): el visor sin cambios (pintar 9,63 → 9,99
+ms, orbitar 10,31 → 9,69 ms), abrir la plaza 4,74 → 4,72 s, arranque 0,82 →
+0,91 s (las pestañas nuevas), ningún objeto filtrado en seis reaperturas;
+suite rápida 3444 y lenta 804 correctas.
+
+## [0.5.5] — 2026-09-28
+
+**Nada de Trimble, y lo que los usuarios pidieron.** Tras un aviso de
+derechos de autor de Trimble, IngeTrazo deja de ejecutar, descargar o
+distribuir cualquier pieza de SketchUp: el conversor skp2dae y la
+exportación a `.skp` se van, y los `.skp` se siguen abriendo con el lector
+libre. Íconos propios en lugar de los que imitaban a SketchUp. Y una tanda
+de reportes resueltos: la órbita gira alrededor de lo que miras, Empujar/Tirar
+se detiene en las guías de la Cinta, rotar cae exacto en el punto enganchado,
+guardar ya no deja un «cambios sin guardar» fantasma, y las medidas salen en
+las unidades del documento.
+
+### Retirado — nada de Trimble
+Tras el aviso de derechos de autor de Trimble (2026-09-28), IngeTrazo ya no
+ejecuta, descarga ni enlaza nada de Trimble:
+- **El conversor skp2dae** (usaba la `SketchUpAPI.dll` de Trimble bajo Wine)
+  y su descarga automática, que bajaba esa DLL del add-on de Blender de un
+  tercero. Los `.skp` se abren sólo con el lector libre (OpenSKP); si uno no
+  se puede leer, IngeTrazo lo dice y sugiere exportarlo desde SketchUp como
+  COLLADA u OBJ.
+- **Exportar ▸ SketchUp (.skp)**: el escritor de OpenSKP arma cada archivo
+  sobre un documento en blanco que generó el SDK de Trimble, y ese molde ya
+  no se distribuye en ningún paquete (PyInstaller, Flatpak, Snap).
+  `--check` falla un paquete que todavía lo traiga. Para llevar un modelo a
+  SketchUp, exportá COLLADA (.dae).
+- Los tests y la herramienta de validación que usaban el SDK de Trimble como
+  referencia; `scripts/skp_diff.py` ahora compara contra un `.dae` que el
+  propio SketchUp exporta.
+
+- **Ayuda ▸ Obtener más modelos** ya no enlaza al 3D Warehouse de Trimble;
+  quedan Poly Haven, ambientCG y Sketchfab.
+
+### Cambiado
+- **Íconos propios de IngeTrazo** donde imitaban a los de SketchUp:
+  Caminar son dos huellas, Mirar alrededor una cabeza vista desde arriba con
+  su cono de visión, las herramientas de sólidos dos discos que se cruzan, el
+  texto una T en un marco, el zoom a la extensión cuatro esquinas alrededor
+  de la lupa, y las cotas terminan en puntos. **Situar cámara es una
+  camarita** con el lente naranja y una marca debajo, y **el borrador una
+  goma inclinada** con su punta naranja. Las **vistas estándar siguen siendo
+  la casita** con la pared que se mira en naranja.
+- **IngeTrazo se presenta por sí mismo**: el README, la ficha del Flatpak y
+  la del Snap ya no lo describen como «estilo SketchUp» ni «alternativa a
+  SketchUp», sino con su lema, *traza como a mano*, y dicen cómo se
+  pronuncia su nombre (in-je-TRA-so: *inge*niería + *trazo*; sugerencia de
+  @pacaeiro). SketchUp se nombra sólo para decir que abre sus `.skp`.
+
+### Añadido
+- **Repetir el último comando con Mayús+R**, y como primera entrada del menú
+  del clic derecho (#145, @canalsecuario-blip).
+
+### Corregido
+- **Rotar y Transportador enganchan el eje rojo aunque la línea de
+  referencia esté a pocos grados de él** (#140, @pacaeiro). El brazo se
+  quedaba pegado a la dirección de la propia referencia («A través del
+  punto») y la extensión de otras aristas movía el ángulo según la
+  distancia del cursor. El brazo del transportador ya no usa las
+  inferencias de dibujar líneas (a través del punto, extensión, desde el
+  punto): solo puntos y ejes.
+- **La extensión ya no sale de un segmento de círculo, arco o superficie
+  suavizada, ni de una arista oculta** (#140): lanzaba líneas de trazos a
+  través de la esfera.
+- **La órbita gira alrededor de lo que estás mirando** (#164, @mariuseng-dot):
+  el punto del modelo bajo el cursor al empezar a arrastrar, o el modelo a la
+  vista si apuntas al cielo, y ese punto se queda bajo el cursor. Antes
+  giraba alrededor del objetivo de la cámara, lejísimos en un modelo grande.
+- **Empujar/Tirar se detiene en los puntos y líneas guía de la Cinta**
+  (#165, @ewertondiaseng-byte), con el aviso «Punto guía» / «En línea».
+- **Rotar cae exacto en el punto enganchado** (#163, @fafecm): con el
+  segundo clic enganchado a un punto, se aplicaba el ángulo redondeado a 0,1°
+  de la etiqueta (−70,3°) y la arista quedaba ~0,7 mm al costado a 2 m del
+  pivote. Además la vista previa ya no acumula error: se calcula siempre
+  desde una copia tomada al empezar, y cancelar deja todo idéntico.
+- **Guardar y cerrar ya no pregunta por cambios sin guardar** (#159,
+  @pacaeiro): cualquier cambio de selección después de guardar contaba como
+  una modificación.
+- **Círculo, polígono, empalme y recorrido muestran las medidas en las
+  unidades del documento** (#149, @xyont): en milímetros decían metros. Lo
+  que tecleas en el cuadro de valores se ve con la unidad en que se leerá, y
+  «lados»/«segmentos» se traducen.
+- **El Rectángulo acepta `200,100`** (sin espacio) como ancho y alto, como en
+  SketchUp (#152, @xyont). `200, 100` y `200;100` siguen valiendo; en las demás
+  herramientas la coma sigue siendo el decimal.
+- **Una cara invertida sigue invertida al seguir dibujando**
+  (#144, @canalsecuario-blip).
+- **Todas las pestañas de la bandeja derecha caben en los 240 px mínimos**
+  (#139, @felixriestra): los botones de Capas y los combos de Terreno se
+  cortaban.
+
+### Añadido
+- **Buscador de comandos (F3)**, como el F3 de Blender, la búsqueda de
+  SketchUp o la línea de comandos de Rhino: se escriben unas letras y
+  Enter ejecuta el comando. Encuentra cualquier acción de la ventana
+  (menús, herramientas, paneles, complementos) en el idioma de los menús
+  o en inglés, por su ruta de menú, por iniciales («rf» → Invertir caras,
+  en inglés *Reverse Faces*) y aunque tenga una errata («orinetar»), sin
+  importar tildes ni mayúsculas. Cada resultado es una sola fila, como en
+  Blender (ruta atenuada ▸ icono y nombre, atajo a la derecha), el cuadro
+  se abre bajo el ratón, dentro del área de modelado y sin tapar las
+  barras laterales ni superiores, con diez filas a la vista, clic derecho ▸
+  Cambiar atajo… lleva a Preferencias, y una letra escrita con un menú
+  abierto busca solo en ese menú. Al dejar el ratón sobre un resultado
+  aparece, como en Blender, un recuadro con el nombre, qué hace y su atajo,
+  sin textos cortados. También en Ayuda ▸ Buscar comandos… y en el
+  compositor de láminas, con sus propios comandos.
+- **Las herramientas del compositor tienen nombre corto** («Cota en
+  cadena»); la explicación larga queda en el recuadro de ayuda.
 
 ## [0.5.4] — 2026-09-26
 
