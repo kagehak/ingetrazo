@@ -222,6 +222,7 @@ def test_menu_placeholder_when_no_plugins(main_window):
     texts = [a.text() for a in actions]
     assert "Open plugins folder" in texts
     assert "Develop a plugin…" in texts
+    assert "Manage extensions…" in texts
 
 
 def test_plugin_cannot_steal_a_builtin_shortcut(tmp_path, main_window):

@@ -1784,6 +1784,12 @@ class MainWindow(QMainWindow):
 
         self._add_example_extensions_menu(ext_menu)
 
+        ext_menu.addSeparator()
+        manage_action = ext_menu.addAction(tr("Manage extensions…"))
+        manage_action.setStatusTip(tr(
+            "Browse, install and update community extensions."))
+        manage_action.triggered.connect(self._on_manage_extensions)
+
         # The on-ramp for plugin authors: their folder and the dev guide.
         ext_menu.addSeparator()
         act = ext_menu.addAction(tr("Open plugins folder"))
@@ -1795,6 +1801,12 @@ class MainWindow(QMainWindow):
         act.setStatusTip(tr(
             "Open the guide to writing plugins for IngeTrazo."))
         act.triggered.connect(self._on_develop_plugin)
+
+    def _on_manage_extensions(self) -> None:
+        from views.extension_manager_dialog import ExtensionManagerDialog
+        dialog = ExtensionManagerDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
 
     @staticmethod
     def example_extensions() -> list:

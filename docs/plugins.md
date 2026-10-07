@@ -192,6 +192,25 @@ is logged once and removed, never breaking the frame or the cursor; the
 painter state is saved and restored around every overlay; document data
 that is not JSON-safe is dropped on save rather than failing it.
 
+### Managing community extensions
+
+**Extensions ▸ Manage extensions…** reads the community catalog from
+[`ingetrazo-extensions`](https://github.com/ingelibre/ingetrazo-extensions),
+downloads individual Python files or ZIP packages, and installs them in the
+per-user plugins directory. The manager separates browsing from the list of
+installed catalog extensions; both views support text and tag filtering.
+Each download is checked against the catalog's
+SHA-256 before it is installed. The manager marks an extension as reviewed
+only when its hash matches the maintainer's entry in `reviewed.toml`; other
+extensions are labelled as community extensions, not reviewed.
+
+Installed catalog extensions can be updated and enabled or disabled from the
+manager. These changes take effect after restarting IngeTrazo because
+extensions register tools and UI during startup. Extensions are Python code:
+install only extensions whose source and publisher you trust. The checksum
+detects content that differs from the catalog; it is not a sandbox or a
+guarantee that code is safe.
+
 ### Where your interface goes
 
 The side tray is one place, not the only one. Pick by how the user works
@@ -298,6 +317,6 @@ Wilson's Windowizer 3 by Bane Andreev, an architect, written with AI help.
 - Side-panel registration, document data, viewport overlays and snap
   providers — **done** (`setup(app)`, above).
 - Plugin manifest (`plugin.toml`) for metadata and dependencies.
-- Plugin manager UI (install, enable, disable, update) — after the API
-  stabilises; a package format would freeze the API too early (see the
-  discussion in PR #1).
+- Plugin manager UI (install, enable, disable, update) — **done**; it uses
+  the community catalog without imposing a package format on the extension
+  API.

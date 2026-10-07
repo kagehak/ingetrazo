@@ -96,6 +96,10 @@ def _candidates(p_dir: Path):
         if entry.is_file() and entry.suffix == ".py":
             yield entry.stem, entry
         elif entry.is_dir() and (entry / "__init__.py").is_file():
+            if (entry / ".disabled").is_file():
+                log.info("plugin %r is disabled by the extension manager",
+                         entry.name)
+                continue
             yield entry.name, entry / "__init__.py"
 
 
