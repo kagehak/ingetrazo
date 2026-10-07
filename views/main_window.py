@@ -1724,6 +1724,8 @@ class MainWindow(QMainWindow):
         log = logging.getLogger("ingetrazo.plugins")
         ext_menu = menubar.addMenu(tr("Extensions"))
         plugins, errors = discover_plugins()
+        from core.extension_manager import extension_startup_state
+        self._extension_startup_state = extension_startup_state()
 
         # Shortcuts the app already claimed (toolbar tools, menus — all built
         # before this menu): first come, first served. A plugin asking for a
@@ -1750,6 +1752,10 @@ class MainWindow(QMainWindow):
                 continue
             if not plug.tools:
                 count += 1                  # a panel-only extension counts
+        self._extension_load_errors = {
+            err.stem: {"error": err.error, "path": str(err.path)}
+            for err in errors
+        }
         for plug in plugins:
             for tool in plug.tools:
                 key = f"plugin_{plug.stem}_{type(tool).__name__}"

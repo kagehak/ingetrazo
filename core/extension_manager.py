@@ -17,6 +17,7 @@ import urllib.request
 import uuid
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from core.extensions import user_plugins_dir
@@ -55,6 +56,15 @@ class Extension:
     summary: dict[str, str]
     tags: tuple[str, ...]
     screenshot: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class CatalogSnapshot:
+    extensions: list[Extension]
+    reviewed: dict[str, dict]
+    fetched_at: str
+    from_cache: bool
 
 
 def _get(url: str, limit: int) -> bytes:
@@ -109,6 +119,10 @@ def _parse_extension(raw: object) -> Extension:
                 ".png", ".jpg", ".jpeg", ".webp")):
         raise ExtensionManagerError(
             f"Extension {ident!r} has an invalid screenshot filename.")
+    updated_at = raw.get("updated_at")
+    if updated_at is not None and not isinstance(updated_at, str):
+        raise ExtensionManagerError(
+            f"Extension {ident!r} has an invalid update date.")
     return Extension(
         id=ident,
         version=raw["version"],
@@ -122,16 +136,16 @@ def _parse_extension(raw: object) -> Extension:
         summary=_text_map(raw.get("summary"), "summary"),
         tags=tuple(tags),
         screenshot=screenshot,
+        updated_at=updated_at,
     )
 
 
-def load_catalog() -> tuple[list[Extension], dict[str, dict]]:
-    """Fetch and validate the catalog and maintainer-reviewed hashes."""
+def _parse_catalog(catalog_data: bytes, reviewed_data: bytes,
+                   fetched_at: str, from_cache: bool) -> CatalogSnapshot:
     try:
-        catalog = json.loads(_get(CATALOG_URL, MAX_CATALOG_BYTES))
+        catalog = json.loads(catalog_data)
         import tomllib
-        reviewed = tomllib.loads(_get(REVIEWED_URL, MAX_CATALOG_BYTES).decode(
-            "utf-8"))
+        reviewed = tomllib.loads(reviewed_data.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ExtensionManagerError(
             f"The extension catalog is invalid: {exc}") from exc
@@ -146,7 +160,88 @@ def load_catalog() -> tuple[list[Extension], dict[str, dict]]:
         raise ExtensionManagerError("The catalog contains duplicate IDs.")
     if not isinstance(reviewed, dict):
         raise ExtensionManagerError("The reviewed-extension list is invalid.")
-    return extensions, reviewed
+    return CatalogSnapshot(extensions, reviewed, fetched_at, from_cache)
+
+
+def catalog_cache_path() -> Path:
+    """Per-user cache for the catalog and its matching review hashes."""
+    return user_plugins_dir().parent / "catalog-cache.json"
+
+
+def load_cached_catalog() -> CatalogSnapshot | None:
+    path = catalog_cache_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, ValueError) as exc:
+        logging.getLogger("ingetrazo.extensions").warning(
+            "could not read extension catalog cache %s: %s", path, exc)
+        return None
+    if not isinstance(data, dict):
+        logging.getLogger("ingetrazo.extensions").warning(
+            "invalid extension catalog cache at %s", path)
+        return None
+    catalog_data = data.get("catalog")
+    reviewed_data = data.get("reviewed")
+    fetched_at = data.get("fetched_at")
+    if (not isinstance(catalog_data, dict)
+            or not isinstance(reviewed_data, str)
+            or not isinstance(fetched_at, str)):
+        logging.getLogger("ingetrazo.extensions").warning(
+            "incomplete extension catalog cache at %s", path)
+        return None
+    try:
+        return _parse_catalog(
+            json.dumps(catalog_data).encode("utf-8"),
+            reviewed_data.encode("utf-8"), fetched_at, True)
+    except ExtensionManagerError as exc:
+        logging.getLogger("ingetrazo.extensions").warning(
+            "invalid extension catalog cache %s: %s", path, exc)
+        return None
+
+
+def refresh_catalog() -> CatalogSnapshot:
+    """Fetch and validate online catalog data, caching a complete snapshot.
+
+    If the network is unavailable, a previously validated cache is returned
+    instead. With no usable cache, the original network error is raised.
+    """
+    try:
+        catalog_data = _get(CATALOG_URL, MAX_CATALOG_BYTES)
+        reviewed_data = _get(REVIEWED_URL, MAX_CATALOG_BYTES)
+        fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        snapshot = _parse_catalog(
+            catalog_data, reviewed_data, fetched_at, False)
+    except (ExtensionManagerError, OSError) as exc:
+        cached = load_cached_catalog()
+        if cached is not None:
+            logging.getLogger("ingetrazo.extensions").info(
+                "using cached extension catalog after refresh failed: %s",
+                exc)
+            return cached
+        raise
+
+    path = catalog_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".part")
+        temporary.write_text(json.dumps({
+            "catalog": json.loads(catalog_data),
+            "reviewed": reviewed_data.decode("utf-8"),
+            "fetched_at": fetched_at,
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        logging.getLogger("ingetrazo.extensions").warning(
+            "could not cache extension catalog at %s", path, exc_info=True)
+    return snapshot
+
+
+def load_catalog() -> tuple[list[Extension], dict[str, dict]]:
+    """Compatibility wrapper returning catalog entries and review hashes."""
+    snapshot = refresh_catalog()
+    return snapshot.extensions, snapshot.reviewed
 
 
 def display_name(extension: Extension, language: str) -> str:
@@ -199,6 +294,55 @@ def installed_info(ident: str) -> dict | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def extension_startup_state() -> dict[str, dict]:
+    """Snapshot managed extension files and enabled state for this app run."""
+    root = user_plugins_dir()
+    try:
+        entries = list(root.iterdir())
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        logging.getLogger("ingetrazo.extensions").warning(
+            "could not read installed extensions at startup: %s",
+            root, exc_info=True)
+        return {}
+
+    state = {}
+    for folder in entries:
+        if (folder.name.startswith(".") or folder.is_symlink()
+                or not folder.is_dir()):
+            continue
+        try:
+            metadata = json.loads((folder / "extension.json").read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        ident = metadata.get("id")
+        if not isinstance(ident, str) or not _ID_RE.fullmatch(ident):
+            continue
+        state[ident] = {
+            "sha256": metadata.get("sha256"),
+            "enabled": not (folder / ".disabled").is_file(),
+        }
+    return state
+
+
+def restart_required(ident: str, startup_state: dict[str, dict]) -> bool:
+    """Whether the current installation differs from what this run started."""
+    current = installed_info(ident)
+    if current is None:
+        return False
+    startup = startup_state.get(ident)
+    was_enabled = bool(startup and startup.get("enabled"))
+    enabled = is_extension_enabled(ident)
+    if enabled != was_enabled:
+        return True
+    return enabled and (
+        startup is None or current.get("sha256") != startup.get("sha256"))
 
 
 def installation_conflict(ident: str) -> bool:
@@ -374,3 +518,15 @@ def compatible_with_current(extension: Extension) -> bool:
     width = max(len(required), len(current))
     return required + (0,) * (width - len(required)) <= \
         current + (0,) * (width - len(current))
+
+
+def tested_version_is_old(extension: Extension) -> bool:
+    """True when tested metadata trails this app by two minor releases."""
+    tested = re.match(r"^\s*(\d+)\.(\d+)", extension.minimum_version)
+    current = re.match(r"^\s*(\d+)\.(\d+)", __version__)
+    if not tested or not current:
+        return False
+    tested_major, tested_minor = map(int, tested.groups())
+    current_major, current_minor = map(int, current.groups())
+    return tested_major < current_major or (
+        tested_major == current_major and current_minor - tested_minor >= 2)

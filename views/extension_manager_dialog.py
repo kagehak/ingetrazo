@@ -6,12 +6,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QStandardPaths, QTimer, QUrl
+from PySide6.QtCore import (QObject, QPoint, QRunnable, Qt, QStandardPaths,
+                            QThreadPool, QTimer, QUrl, Signal)
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -35,13 +37,17 @@ from core.extension_manager import (
     compatible_with_current,
     display_name,
     display_summary,
+    extension_startup_state,
     install_extension,
     installed_info,
     is_extension_enabled,
     is_reviewed,
     installation_conflict,
-    load_catalog,
+    load_cached_catalog,
+    refresh_catalog,
+    restart_required,
     set_extension_enabled,
+    tested_version_is_old,
 )
 
 log = logging.getLogger("ingetrazo.extensions")
@@ -52,6 +58,28 @@ _MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
 _IMAGE_SIZE = (256, 160)  # 16:10
 _ROW_MAX_HEIGHT = 300
 _ROW_MAX_WIDTH = 660
+
+
+class _CatalogWorker(QObject):
+    completed = Signal(object, object)
+
+    def refresh(self) -> None:
+        try:
+            self.completed.emit(refresh_catalog(), None)
+        except (ExtensionManagerError, OSError) as exc:
+            self.completed.emit(None, exc)
+        except Exception as exc:
+            log.exception("unexpected error refreshing extension catalog")
+            self.completed.emit(None, exc)
+
+
+class _CatalogTask(QRunnable):
+    def __init__(self) -> None:
+        super().__init__()
+        self.signals = _CatalogWorker()
+
+    def run(self) -> None:
+        self.signals.refresh()
 
 
 class ExtensionManagerDialog(QDialog):
@@ -66,6 +94,11 @@ class ExtensionManagerDialog(QDialog):
             "QScrollArea > QWidget > QWidget { background: #f5f6f8; }")
         self._extensions: list[Extension] = []
         self._reviewed: dict[str, dict] = {}
+        self._catalog_snapshot = None
+        self._catalog_worker = None
+        startup_state = getattr(parent, "_extension_startup_state", None)
+        self._startup_state = (startup_state if startup_state is not None
+                               else extension_startup_state())
         self._requested_images: set[str] = set()
         self._network = QNetworkAccessManager(self)
         self._pages: dict[str, dict] = {}
@@ -125,25 +158,49 @@ class ExtensionManagerDialog(QDialog):
                                    timer.start())
 
         filters = QHBoxLayout()
+        filters.setContentsMargins(0, 0, 10, 0)
         filters.addWidget(search, 1)
         reviewed = QCheckBox(tr("Reviewed only"))
         reviewed.setVisible(key == "browse")
         reviewed.toggled.connect(
             lambda _checked, page_key=key: self._render_page(page_key))
         filters.addWidget(reviewed)
+        sort = QComboBox()
+        sort.addItem(tr("Catalog order"), "catalog")
+        sort.addItem(tr("Recently updated"), "recent")
+        sort.addItem(tr("Name A–Z"), "name")
+        sort.addItem(tr("Reviewed first"), "reviewed")
+        sort.addItem(tr("Installed first"), "installed")
+        sort.addItem(tr("Updates available"), "updates")
+        sort.setStyleSheet(
+            "QComboBox { color: #253247; background: #ffffff; "
+            "border: 1px solid #d0d5dd; border-radius: 5px; "
+            "padding: 5px 8px; }"
+            "QComboBox:hover { color: #253247; background: #ffffff; }"
+            "QComboBox QAbstractItemView { color: #253247; "
+            "background: #ffffff; selection-color: #253247; "
+            "selection-background-color: #eef1f5; }"
+            "QComboBox QAbstractItemView::item:hover { color: #253247; "
+            "background: #eef1f5; }")
+        sort.currentIndexChanged.connect(
+            lambda _index, page_key=key: self._render_page(page_key))
+        filters.addWidget(sort)
         page_layout.addLayout(filters)
 
         tags_scroll = QScrollArea()
         tags_scroll.setFrameShape(QFrame.NoFrame)
+        tags_scroll.setWidgetResizable(True)
         tags_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         tags_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         tags_scroll.setFixedHeight(42)
         tags_scroll.setStyleSheet("QScrollArea { background: #f5f6f8; }")
         tags_content = QWidget()
+        tags_content.setMinimumHeight(38)
         tags_content.setStyleSheet("background: #f5f6f8;")
         tags_layout = QHBoxLayout(tags_content)
         tags_layout.setContentsMargins(1, 2, 1, 2)
-        tags_layout.setSpacing(6)
+        tags_layout.setSpacing(8)
+        tags_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         tags_group = QButtonGroup(page)
         tags_group.setExclusive(True)
         tags_scroll.setWidget(tags_content)
@@ -163,22 +220,22 @@ class ExtensionManagerDialog(QDialog):
         grid.setContentsMargins(2, 2, 2, 12)
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(18)
-        grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        grid.setAlignment(Qt.AlignTop)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(0, 0)
-        grid.setColumnStretch(1, 0)
         scroll.setWidget(cards)
         page_layout.addWidget(scroll, 1)
 
         self._pages[key] = {
             "search": search,
             "search_timer": search_timer,
+            "filters": filters,
             "tags_scroll": tags_scroll,
             "tags_layout": tags_layout,
             "tags_group": tags_group,
             "tag": "",
             "reviewed": reviewed,
+            "sort": sort,
             "status": status,
             "scroll": scroll,
             "cards": cards,
@@ -188,21 +245,58 @@ class ExtensionManagerDialog(QDialog):
         return page
 
     def _load(self) -> None:
+        if self._catalog_worker is not None:
+            return
+        cached = load_cached_catalog()
+        if cached is not None:
+            self._apply_catalog(cached)
+        else:
+            self._active_page()["status"].setText(
+                tr("Loading extension catalog…"))
         self._refresh.setEnabled(False)
-        active = self._active_page()
-        active["status"].setText(tr("Loading extension catalog…"))
-        try:
-            self._extensions, self._reviewed = load_catalog()
-            for key in self._pages:
-                self._populate_tags(key)
-                self._render_page(key)
-        except ExtensionManagerError as exc:
-            active["status"].setText(tr("Could not load extensions: {error}",
-                                        error=str(exc)))
+        worker = _CatalogTask()
+        worker.signals.completed.connect(self._catalog_loaded)
+        self._catalog_worker = worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _apply_catalog(self, snapshot) -> None:
+        self._catalog_snapshot = snapshot
+        self._extensions = snapshot.extensions
+        self._reviewed = snapshot.reviewed
+        for key in self._pages:
+            recent_index = self._pages[key]["sort"].findData("recent")
+            if recent_index >= 0:
+                recent_item = self._pages[key]["sort"].model().item(
+                    recent_index)
+                has_update_dates = any(
+                    extension.updated_at for extension in self._extensions)
+                recent_item.setEnabled(has_update_dates)
+            else:
+                recent_item = None
+            if recent_item is not None and not recent_item.isEnabled():
+                self._pages[key]["sort"].setItemData(
+                    recent_index,
+                    tr("The catalog does not include per-extension update "
+                       "dates."),
+                    Qt.ToolTipRole)
+            self._populate_tags(key)
+            self._render_page(key)
+
+    def _catalog_loaded(self, snapshot, error) -> None:
+        if snapshot is not None:
+            self._apply_catalog(snapshot)
+        elif self._catalog_snapshot is None:
+            self._active_page()["status"].setText(
+                tr("Could not load extensions: {error}", error=str(error)))
             for key in self._pages:
                 self._clear_cards(key)
-        finally:
-            self._refresh.setEnabled(True)
+        else:
+            self._active_page()["status"].setText(tr(
+                "Could not refresh catalog. Showing the last cached catalog "
+                "from {date}. {error}",
+                date=self._catalog_snapshot.fetched_at, error=str(error)))
+        self._catalog_worker = None
+        self._refresh.setEnabled(True)
 
     def _active_page_key(self) -> str:
         return "browse" if self._tabs.currentIndex() == 0 else "installed"
@@ -240,6 +334,7 @@ class ExtensionManagerDialog(QDialog):
         page = self._pages[key]
         button = QToolButton()
         button.setText(label)
+        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         button.setCheckable(True)
         button.setProperty("tag", tag)
         button.setStyleSheet(
@@ -294,26 +389,48 @@ class ExtensionManagerDialog(QDialog):
             if query and query not in searchable:
                 continue
             result.append(extension)
+        sort_key = page["sort"].currentData()
+        if sort_key == "name":
+            result.sort(key=lambda ext: display_name(
+                ext, current_language()).casefold())
+        elif sort_key == "reviewed":
+            result.sort(key=lambda ext: (
+                not is_reviewed(ext, self._reviewed),
+                display_name(ext, current_language()).casefold()))
+        elif sort_key == "installed":
+            result.sort(key=lambda ext: (
+                installed_info(ext.id) is None,
+                display_name(ext, current_language()).casefold()))
+        elif sort_key == "updates":
+            result.sort(key=lambda ext: (
+                not self._update_available(ext),
+                display_name(ext, current_language()).casefold()))
+        elif sort_key == "recent":
+            result.sort(key=lambda ext: (
+                ext.updated_at is not None, ext.updated_at or ""),
+                reverse=True)
         return result
+
+    @staticmethod
+    def _update_available(extension: Extension) -> bool:
+        info = installed_info(extension.id)
+        return info is not None and info.get("sha256") != extension.sha256
 
     def _render_page(self, key: str, *_args) -> None:
         page = self._pages[key]
         self._clear_cards(key)
         extensions = self._filtered_extensions(key)
         language = current_language()
-        cell_width = max(
-            400, min(_ROW_MAX_WIDTH,
-                     (page["scroll"].viewport().width() - 40) // 2))
         for index, extension in enumerate(extensions):
-            row = self._make_row(extension, language, page["cards"], key,
-                                 cell_width)
+            row = self._make_row(extension, language, page["cards"], key)
             self._pages[key]["grid"].addWidget(row, index // 2, index % 2)
         page["status"].setText(tr("{shown} of {total} extensions",
                                   shown=len(extensions),
                                   total=(sum(installed_info(e.id) is not None
                                              for e in self._extensions)
                                          if key == "installed"
-                                         else len(self._extensions))))
+                                         else len(self._extensions)))
+                              + self._catalog_status_suffix())
         if key == self._active_page_key():
             self._load_visible_images()
 
@@ -321,7 +438,7 @@ class ExtensionManagerDialog(QDialog):
         self._render_page(self._active_page_key())
 
     def _make_row(self, extension: Extension, language: str,
-                  parent: QWidget, page_key: str, width: int) -> QWidget:
+                  parent: QWidget, page_key: str) -> QWidget:
         info = installed_info(extension.id)
         managed = info is not None
         enabled = is_extension_enabled(extension.id) if managed else False
@@ -329,11 +446,15 @@ class ExtensionManagerDialog(QDialog):
         compatible = compatible_with_current(extension)
         reviewed = is_reviewed(extension, self._reviewed)
         conflict = installation_conflict(extension.id)
+        load_error = getattr(self.parent(), "_extension_load_errors", {}).get(
+            extension.id)
+        update_available = managed and not current
 
         row = QWidget(parent)
-        row.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        row.setFixedWidth(width)
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row.setMinimumWidth(400)
         row.setMaximumHeight(_ROW_MAX_HEIGHT)
+        row.setMaximumWidth(_ROW_MAX_WIDTH)
         row.setStyleSheet(
             "QWidget#extensionRow { background: #ffffff; "
             "border: 1px solid #d9dee5; }"
@@ -407,12 +528,22 @@ class ExtensionManagerDialog(QDialog):
         summary.setMaximumHeight(100)
         details.addWidget(summary, 1)
         if managed:
-            state = tr("Installed") if current else tr(
-                "Installed version: {version}",
-                version=info.get("version", tr("unknown")))
+            if update_available:
+                state = tr("Update available: v{installed} → v{available}",
+                           installed=info.get("version", tr("unknown")),
+                           available=extension.version)
+            else:
+                state = tr("Up to date · v{version}",
+                           version=extension.version)
             if not enabled:
                 state += " · " + tr("Disabled")
             details.addWidget(QLabel(state))
+            if restart_required(extension.id, self._startup_state):
+                restart = QLabel(tr("Restart required to apply changes"))
+                restart.setStyleSheet(
+                    "color: #9a6700; font-weight: bold; font-size: 11px")
+                restart.setWordWrap(True)
+                details.addWidget(restart)
         elif conflict:
             details.addWidget(QLabel(
                 tr("A plugin with this ID already exists.")))
@@ -421,11 +552,28 @@ class ExtensionManagerDialog(QDialog):
                                 version=extension.minimum_version))
             warning.setWordWrap(True)
             details.addWidget(warning)
+        elif tested_version_is_old(extension):
+            warning = QLabel(tr(
+                "Compatibility is uncertain: this extension was tested with "
+                "IngeTrazo {version}.",
+                version=extension.minimum_version))
+            warning.setWordWrap(True)
+            warning.setStyleSheet("color: #9a6700;")
+            details.addWidget(warning)
+        if load_error:
+            error_label = QLabel(tr("Failed to load at startup"))
+            error_label.setStyleSheet("color: #b42318; font-weight: bold;")
+            details.addWidget(error_label)
+            error_button = QPushButton(tr("View load error"))
+            error_button.clicked.connect(
+                lambda _checked=False, e=extension, failure=load_error:
+                self._show_load_error(e, failure))
+            details.addWidget(error_button)
 
         actions = QHBoxLayout()
         install = QPushButton(
-            tr("Update") if managed and not current
-            else tr("Installed") if managed
+            tr("Update") if update_available
+            else tr("Up to date") if managed
             else tr("Download"))
         install.setEnabled(compatible and not current and (managed or not conflict))
         install.clicked.connect(
@@ -438,15 +586,59 @@ class ExtensionManagerDialog(QDialog):
         actions.addWidget(source)
         if managed:
             toggle = QPushButton(tr("Disable") if enabled else tr("Enable"))
+            if load_error:
+                toggle.setText(tr("Disable extension"))
             toggle.clicked.connect(
                 lambda _checked=False, e=extension: self._toggle(e))
             actions.addWidget(toggle)
+        if load_error:
+            folder_button = QPushButton(tr("Open extension folder"))
+            folder_button.clicked.connect(
+                lambda _checked=False, e=extension:
+                self._open_extension_folder(e.id))
+            actions.addWidget(folder_button)
+            logs_button = QPushButton(tr("Open logs folder"))
+            logs_button.clicked.connect(self._open_logs_folder)
+            actions.addWidget(logs_button)
         actions.addStretch(1)
         details.addLayout(actions)
         content.addLayout(details, 1)
         row_layout.addLayout(content)
 
         return row
+
+    def _catalog_status_suffix(self) -> str:
+        snapshot = self._catalog_snapshot
+        if snapshot is None:
+            return ""
+        date = snapshot.fetched_at.replace("T", " ").replace("+00:00", " UTC")
+        if snapshot.from_cache:
+            return tr(" · Cached catalog from {date}", date=date)
+        return tr(" · Refreshed {date}", date=date)
+
+    def _show_load_error(self, extension: Extension, failure: dict) -> None:
+        error = failure.get("error", tr("Unknown extension loading error"))
+        path = failure.get("path")
+        QMessageBox.warning(
+            self, tr("Extension failed to load"),
+            tr("{name} could not be loaded at startup.\n\n{error}\n\n"
+               "Disable it or open its folder to investigate.",
+               name=display_name(extension, current_language()),
+               error=error)
+            + (f"\n\n{path}" if path else ""))
+
+    def _open_extension_folder(self, ident: str) -> None:
+        from core.extensions import user_plugins_dir
+        folder = user_plugins_dir() / ident
+        if not folder.exists():
+            folder = user_plugins_dir()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _open_logs_folder(self, _checked=False) -> None:
+        from core.paths import user_log_dir
+        QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(user_log_dir())))
+
 
     def _screenshot_cache(self, extension: Extension) -> Path | None:
         if not extension.screenshot:
@@ -526,14 +718,6 @@ class ExtensionManagerDialog(QDialog):
                 label.size(), Qt.KeepAspectRatioByExpanding,
                 Qt.SmoothTransformation))
             label.setText("")
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        QTimer.singleShot(0, self._render_after_resize)
-
-    def _render_after_resize(self) -> None:
-        for key in self._pages:
-            self._render_page(key)
 
     def _install(self, extension: Extension) -> None:
         try:
