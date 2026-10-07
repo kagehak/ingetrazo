@@ -334,9 +334,9 @@ def extension_startup_state() -> dict[str, dict]:
 def restart_required(ident: str, startup_state: dict[str, dict]) -> bool:
     """Whether the current installation differs from what this run started."""
     current = installed_info(ident)
-    if current is None:
-        return False
     startup = startup_state.get(ident)
+    if current is None:
+        return startup is not None
     was_enabled = bool(startup and startup.get("enabled"))
     enabled = is_extension_enabled(ident)
     if enabled != was_enabled:
@@ -350,8 +350,21 @@ def installation_conflict(ident: str) -> bool:
     return target.exists() and not managed
 
 
+def uninstall_extension(ident: str) -> None:
+    """Remove an extension only when its directory is manager-owned."""
+    target, managed = _managed_target(ident)
+    if not target.exists() or not managed or not target.is_dir():
+        raise ExtensionManagerError(
+            f"{ident!r} is not an installed extension managed by IngeTrazo.")
+    shutil.rmtree(target)
+
+
 def install_extension(extension: Extension) -> None:
     """Download, verify and atomically install an extension or its update."""
+    if not compatible_with_current(extension):
+        raise ExtensionManagerError(
+            f"{extension.id!r} requires IngeTrazo "
+            f"{extension.minimum_version} or later.")
     target, managed = _managed_target(extension.id)
     if not managed:
         raise ExtensionManagerError(

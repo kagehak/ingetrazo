@@ -6,6 +6,21 @@ follow [SemVer](https://semver.org).
 
 ## [Sin publicar]
 
+### Extensiones
+- **El gestor de extensiones permite desinstalar** extensiones instaladas
+  desde el catálogo, además de activarlas y desactivarlas; avisa cuando hace
+  falta reiniciar IngeTrazo para aplicar el cambio.
+- **Antes de instalar se ven la licencia y el repositorio del autor**. Las
+  versiones que no figuran en la lista de hashes revisados por los
+  mantenedores se identifican como extensiones de la comunidad, no revisadas.
+- **Las extensiones incompatibles no se pueden instalar ni activar**: el
+  gestor respeta la versión mínima de IngeTrazo indicada en el catálogo y la
+  instalación vuelve a comprobarla antes de descargar el paquete.
+- **Las actualizaciones disponibles se señalan al abrir el gestor**; los
+  archivos de la extensión solo se descargan al elegir Actualizar.
+- **El gestor también se adapta al tema oscuro**: fondos, tarjetas, filtros y
+  textos conservan el contraste al cambiar entre temas claro y oscuro.
+
 ### Rendimiento
 - **Orbitar un modelo con miles de componentes es 11× más fluido**: con la
   planta industrial de la #158 (21 406 copias) cada cuadro pasaba de 1,3 s

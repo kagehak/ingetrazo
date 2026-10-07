@@ -10,6 +10,7 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QLabel,
     QPushButton,
     QToolButton,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from core import extension_manager as manager
 from core.extensions import discover_plugins
+from views.theme import dark_palette
 
 
 TOOL_SOURCE = """
@@ -188,6 +190,22 @@ def test_install_verify_disable_and_enable_extension(tmp_path, monkeypatch):
     assert manager.restart_required("sample", startup)
 
 
+def test_uninstall_removes_only_manager_owned_extension(tmp_path, monkeypatch):
+    monkeypatch.setattr(manager, "user_plugins_dir", lambda: tmp_path)
+    source = TOOL_SOURCE.encode()
+    monkeypatch.setattr(manager, "_get", lambda *_args: source)
+    manager.install_extension(_extension(source))
+    startup = manager.extension_startup_state()
+
+    manager.uninstall_extension("sample")
+
+    assert not (tmp_path / "sample").exists()
+    assert manager.installed_info("sample") is None
+    assert manager.restart_required("sample", startup)
+    with pytest.raises(manager.ExtensionManagerError, match="not an installed"):
+        manager.uninstall_extension("sample")
+
+
 def test_restart_required_detects_disable_against_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "user_plugins_dir", lambda: tmp_path)
     source = TOOL_SOURCE.encode()
@@ -251,6 +269,27 @@ def test_minimum_version_comparison():
     assert manager.compatible_with_current(
         manager.Extension(**{**extension.__dict__,
                              "minimum_version": "99.0"})) is False
+
+
+def test_incompatible_extension_is_rejected_before_download(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(manager, "user_plugins_dir", lambda: tmp_path)
+    extension = manager.Extension(**{
+        **_extension(b"future").__dict__,
+        "minimum_version": "99.0",
+    })
+    called = False
+
+    def unexpected_download(*_args):
+        nonlocal called
+        called = True
+        return b"future"
+
+    monkeypatch.setattr(manager, "_get", unexpected_download)
+    with pytest.raises(manager.ExtensionManagerError, match="requires IngeTrazo"):
+        manager.install_extension(extension)
+    assert not called
+    assert not (tmp_path / extension.id).exists()
 
 
 def test_tested_version_age_is_a_nonblocking_warning():
@@ -358,6 +397,138 @@ def test_failed_extension_card_offers_recovery_actions(tmp_path, monkeypatch):
         app.processEvents()
 
 
+def test_manager_shows_update_and_trust_details_without_downloading(
+        tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    extension = manager.Extension(**{
+        **_extension(b"catalog-current").__dict__,
+        "tags": ("drawing",),
+    })
+    from views import extension_manager_dialog as dialog_module
+    _stub_catalog(monkeypatch, dialog_module, [extension])
+    monkeypatch.setattr(manager, "user_plugins_dir", lambda: tmp_path)
+    target = tmp_path / extension.id
+    target.mkdir()
+    (target / "extension.json").write_text(json.dumps({
+        "id": extension.id,
+        "version": "0.9",
+        "sha256": "0" * 64,
+    }))
+    download_calls = []
+    monkeypatch.setattr(
+        dialog_module, "install_extension",
+        lambda item: download_calls.append(item.id))
+    dialog = dialog_module.ExtensionManagerDialog()
+    try:
+        _wait_for_catalog(dialog, app)
+        row = dialog._pages["browse"]["grid"].itemAt(0).widget()
+        labels = [label.text() for label in row.findChildren(QLabel)]
+        buttons = [button.text() for button in row.findChildren(QPushButton)]
+        assert any("Update available" in label for label in labels)
+        assert "License: MIT" in labels
+        assert any("not reviewed by an IngeTrazo maintainer" in label
+                   for label in labels)
+        assert any("v1.0" in label and "Tested with IngeTrazo" in label
+                   for label in labels)
+        assert "Update" in buttons
+        assert "Repository ↗" in buttons
+        repository = next(button for button in row.findChildren(QPushButton)
+                          if button.text() == "Repository ↗")
+        assert "padding: 3px 7px" in repository.styleSheet()
+        author_column = row.findChildren(QLabel)
+        author = next(label for label in row.findChildren(QLabel)
+                      if label.text() == "by Author")
+        assert "font-size: 13px" in author.styleSheet()
+        license_label = next(label for label in row.findChildren(QLabel)
+                             if label.text() == "License: MIT")
+        assert author_column.index(license_label) > author_column.index(
+            next(label for label in author_column
+                 if label.text().startswith("Drawing")))
+        assert "font-size: 13px" in license_label.styleSheet()
+        assert "font-weight: bold" in license_label.styleSheet()
+        assert download_calls == []
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        app.processEvents()
+
+
+def test_long_author_tags_and_license_wrap_within_preview_width(
+        tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    extension = manager.Extension(**{
+        **_extension(b"long-details").__dict__,
+        "author": "A very long extension author name that should wrap "
+                  "rather than push the card layout",
+        "license": "A long custom license name that should wrap below tags",
+        "tags": ("architecture-and-urban-planning",
+                 "productivity-workflow", "data-import-export"),
+    })
+    from views import extension_manager_dialog as dialog_module
+    _stub_catalog(monkeypatch, dialog_module, [extension])
+    monkeypatch.setattr(manager, "user_plugins_dir", lambda: tmp_path)
+    dialog = dialog_module.ExtensionManagerDialog()
+    try:
+        _wait_for_catalog(dialog, app)
+        dialog.show()
+        app.processEvents()
+        row = dialog._pages["browse"]["grid"].itemAt(0).widget()
+        author = next(label for label in row.findChildren(QLabel)
+                      if label.text().startswith("by A very long"))
+        license_label = next(label for label in row.findChildren(QLabel)
+                             if label.text().startswith("License: A long"))
+        assert author.wordWrap()
+        assert license_label.wordWrap()
+        assert author.width() <= dialog_module._IMAGE_SIZE[0]
+        assert license_label.width() <= dialog_module._IMAGE_SIZE[0]
+        assert author.height() > author.fontMetrics().height()
+        assert license_label.height() > license_label.fontMetrics().height()
+        assert row.width() <= dialog_module._ROW_MAX_WIDTH
+        tags_layout = next(layout for layout in row.findChildren(
+            dialog_module.FlowLayout))
+        image_details = tags_layout.parentWidget()
+        assert image_details.styleSheet() == "background: transparent;"
+        assert tags_layout.heightForWidth(dialog_module._IMAGE_SIZE[0]) \
+            > max(tags_layout.itemAt(index).sizeHint().height()
+                  for index in range(tags_layout.count()))
+        title = next(label for label in row.findChildren(QLabel)
+                     if label.text() == "Sample")
+        assert not title.wordWrap()
+        version_label = next(label for label in row.findChildren(QLabel)
+                             if label.text().startswith("v1.0 · Tested with"))
+        assert title.geometry().top() - version_label.geometry().bottom() < 20
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        app.processEvents()
+
+
+def test_incompatible_extension_is_not_offered_for_install_or_enable(
+        tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    extension = manager.Extension(**{
+        **_extension(b"future").__dict__,
+        "minimum_version": "99.0",
+    })
+    from views import extension_manager_dialog as dialog_module
+    _stub_catalog(monkeypatch, dialog_module, [extension])
+    monkeypatch.setattr(manager, "user_plugins_dir", lambda: tmp_path)
+    dialog = dialog_module.ExtensionManagerDialog()
+    try:
+        _wait_for_catalog(dialog, app)
+        row = dialog._pages["browse"]["grid"].itemAt(0).widget()
+        labels = [label.text() for label in row.findChildren(QLabel)]
+        buttons = [button.text() for button in row.findChildren(QPushButton)]
+        assert any("Requires IngeTrazo 99.0 or later" in label
+                   for label in labels)
+        assert "Download" not in buttons
+        assert "Enable" not in buttons
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        app.processEvents()
+
+
 def test_unexpected_catalog_refresh_error_keeps_cached_catalog_visible(
         monkeypatch):
     app = QApplication.instance() or QApplication([])
@@ -377,7 +548,7 @@ def test_unexpected_catalog_refresh_error_keeps_cached_catalog_visible(
         _wait_for_catalog(dialog, app)
         assert [item.id for item in dialog._extensions] == [extension.id]
         assert "Could not refresh catalog" in (
-            dialog._pages["browse"]["status"].text())
+            dialog._catalog_info.text())
         assert dialog._refresh.isEnabled()
     finally:
         dialog.close()
@@ -409,6 +580,10 @@ def test_extension_manager_search_tags_and_reviewed_filter(tmp_path, monkeypatch
     dialog = dialog_module.ExtensionManagerDialog()
     try:
         _wait_for_catalog(dialog, app)
+        assert "2 of 2 extensions" in dialog._catalog_info.text()
+        assert "Refreshed" in dialog._catalog_info.text()
+        assert dialog._pages["browse"]["divider"].frameShape() == \
+            QFrame.HLine
         assert len(dialog._filtered_extensions()) == 2
         dialog._pages["browse"]["search"].setText("editor")
         assert [ext.id for ext in dialog._filtered_extensions()] == [
@@ -467,7 +642,7 @@ def test_extension_views_use_two_columns_and_16_by_10_previews(
         assert row.maximumHeight() == dialog_module._ROW_MAX_HEIGHT
         search = dialog._pages["browse"]["search"]
         assert search.parentWidget() is not None
-        assert "background: #ffffff" in search.styleSheet()
+        assert "background: palette(base)" in search.styleSheet()
         tags = dialog._pages["browse"]["tags_group"].buttons()
         assert tags and tags[0].text() == "All"
         assert dialog._pages["browse"]["tags_layout"].spacing() == 8
@@ -481,7 +656,7 @@ def test_extension_views_use_two_columns_and_16_by_10_previews(
         assert all(button.isVisible() for button in tags)
         sort = dialog._pages["browse"]["sort"]
         assert "padding: 5px 8px" in sort.styleSheet()
-        assert "QComboBox:hover { color: #253247" in sort.styleSheet()
+        assert "QComboBox:hover { color: palette(text)" in sort.styleSheet()
         assert dialog._pages["installed"]["grid"].count() == 0
         dialog._tabs.setCurrentIndex(1)
         assert dialog._pages["installed"]["grid"].count() == 0
@@ -489,6 +664,35 @@ def test_extension_views_use_two_columns_and_16_by_10_previews(
         dialog.close()
         dialog.deleteLater()
         app.processEvents()
+
+
+def test_extension_manager_styles_follow_dark_palette(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    original_palette = app.palette()
+    extension = _extension(TOOL_SOURCE.encode())
+    from views import extension_manager_dialog as dialog_module
+    _stub_catalog(monkeypatch, dialog_module, [extension])
+    monkeypatch.setattr(manager, "user_plugins_dir", lambda: tmp_path)
+    try:
+        app.setPalette(dark_palette())
+        dialog = dialog_module.ExtensionManagerDialog()
+        try:
+            _wait_for_catalog(dialog, app)
+            row = dialog._pages["browse"]["grid"].itemAt(0).widget()
+            assert "background: palette(window)" in dialog.styleSheet()
+            assert "background: palette(base)" in row.styleSheet()
+            assert "color: palette(text)" in row.styleSheet()
+            assert "background: palette(base)" in (
+                dialog._pages["browse"]["search"].styleSheet())
+            assert "color: palette(link)" in next(
+                button for button in row.findChildren(QPushButton)
+                if button.text() == "Repository ↗").styleSheet()
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            app.processEvents()
+    finally:
+        app.setPalette(original_palette)
 
 
 def test_installed_card_shows_restart_status(tmp_path, monkeypatch):
@@ -508,10 +712,19 @@ def test_installed_card_shows_restart_status(tmp_path, monkeypatch):
     dialog = dialog_module.ExtensionManagerDialog()
     try:
         _wait_for_catalog(dialog, app)
+        dialog.show()
+        app.processEvents()
         labels = dialog._pages["browse"]["cards"].findChildren(
             QLabel)
         assert any(label.text() == "Restart required to apply changes"
                    for label in labels)
+        row = dialog._pages["browse"]["grid"].itemAt(0).widget()
+        state = next(label for label in row.findChildren(QLabel)
+                     if label.text().startswith("Up to date"))
+        actions = next(button for button in row.findChildren(QPushButton)
+                       if button.text() == "Up to date")
+        assert row.rect().bottom() - actions.geometry().bottom() < 15
+        assert actions.geometry().top() - state.geometry().bottom() < 15
     finally:
         dialog.close()
         dialog.deleteLater()

@@ -206,14 +206,20 @@ includes name, reviewed status, installed state, and available updates; sorting
 by update date is available only when the catalog supplies per-extension
 dates. The manager shows installed and available versions for updates, and
 warns when an extension's tested IngeTrazo version is substantially older.
+Each entry shows its license and links to the author's repository before
+installation. Entries not in the maintainer-reviewed hash list are labelled
+as Community; assume that exact catalog version has not been reviewed by an
+IngeTrazo maintainer.
+Extensions requiring a newer IngeTrazo version cannot be installed or enabled.
 
 Each download is checked against the catalog's SHA-256 before it is installed.
 The manager marks an extension as reviewed only when its hash matches the
-maintainer's entry in `reviewed.toml`; other extensions are labelled as
-community extensions, not reviewed.
+maintainer's entry in `reviewed.toml`.
 
-Installed catalog extensions can be updated and enabled or disabled from the
-manager. These changes take effect after restarting IngeTrazo because
+Installed catalog extensions can be updated, enabled, disabled, or uninstalled
+from the manager. Update availability is shown as soon as the catalog is
+loaded; extension package files are downloaded only after choosing Download or
+Update. These changes take effect after restarting IngeTrazo because
 extensions register tools and UI during startup. Extensions are Python code:
 install only extensions whose source and publisher you trust. The checksum
 detects content that differs from the catalog; it is not a sandbox or a

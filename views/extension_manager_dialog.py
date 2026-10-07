@@ -48,7 +48,9 @@ from core.extension_manager import (
     restart_required,
     set_extension_enabled,
     tested_version_is_old,
+    uninstall_extension,
 )
+from views.tray import FlowLayout
 
 log = logging.getLogger("ingetrazo.extensions")
 _SCREENSHOT_BASE = (
@@ -89,9 +91,10 @@ class ExtensionManagerDialog(QDialog):
         self.resize(1400, 860)
         self.setMinimumSize(1000, 650)
         self.setStyleSheet(
-            "QDialog { background: #f5f6f8; }"
-            "QScrollArea { background: #f5f6f8; border: none; }"
-            "QScrollArea > QWidget > QWidget { background: #f5f6f8; }")
+            "QDialog { background: palette(window); color: palette(window-text); }"
+            "QScrollArea { background: palette(window); border: none; }"
+            "QScrollArea > QWidget > QWidget { "
+            "background: palette(window); }")
         self._extensions: list[Extension] = []
         self._reviewed: dict[str, dict] = {}
         self._catalog_snapshot = None
@@ -109,6 +112,10 @@ class ExtensionManagerDialog(QDialog):
         heading.setStyleSheet("font-size: 24px; font-weight: bold")
         header.addWidget(heading)
         header.addStretch(1)
+        self._catalog_info = QLabel(tr("Loading extension catalog…"))
+        self._catalog_info.setStyleSheet(
+            "color: palette(text); font-size: 11px")
+        header.addWidget(self._catalog_info)
         self._refresh = QPushButton(tr("Refresh"))
         self._refresh.clicked.connect(self._load)
         header.addWidget(self._refresh)
@@ -145,10 +152,10 @@ class ExtensionManagerDialog(QDialog):
         search = QLineEdit()
         search.setPlaceholderText(tr("Search extensions…"))
         search.setStyleSheet(
-            "QLineEdit { background: #ffffff; color: #253247; "
-            "border: 1px solid #d0d5dd; border-radius: 5px; "
+            "QLineEdit { background: palette(base); color: palette(text); "
+            "border: 1px solid palette(midlight); border-radius: 5px; "
             "padding: 7px 9px; }"
-            "QLineEdit:focus { border-color: #3584e4; }")
+            "QLineEdit:focus { border-color: palette(link); }")
         search_timer = QTimer(page)
         search_timer.setSingleShot(True)
         search_timer.setInterval(180)
@@ -173,15 +180,17 @@ class ExtensionManagerDialog(QDialog):
         sort.addItem(tr("Installed first"), "installed")
         sort.addItem(tr("Updates available"), "updates")
         sort.setStyleSheet(
-            "QComboBox { color: #253247; background: #ffffff; "
-            "border: 1px solid #d0d5dd; border-radius: 5px; "
+            "QComboBox { color: palette(text); background: palette(base); "
+            "border: 1px solid palette(midlight); border-radius: 5px; "
             "padding: 5px 8px; }"
-            "QComboBox:hover { color: #253247; background: #ffffff; }"
-            "QComboBox QAbstractItemView { color: #253247; "
-            "background: #ffffff; selection-color: #253247; "
-            "selection-background-color: #eef1f5; }"
-            "QComboBox QAbstractItemView::item:hover { color: #253247; "
-            "background: #eef1f5; }")
+            "QComboBox:hover { color: palette(text); "
+            "background: palette(base); }"
+            "QComboBox QAbstractItemView { color: palette(text); "
+            "background: palette(base); "
+            "selection-color: palette(highlighted-text); "
+            "selection-background-color: palette(highlight); }"
+            "QComboBox QAbstractItemView::item:hover { "
+            "color: palette(text); background: palette(alternate-base); }")
         sort.currentIndexChanged.connect(
             lambda _index, page_key=key: self._render_page(page_key))
         filters.addWidget(sort)
@@ -193,10 +202,11 @@ class ExtensionManagerDialog(QDialog):
         tags_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         tags_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         tags_scroll.setFixedHeight(42)
-        tags_scroll.setStyleSheet("QScrollArea { background: #f5f6f8; }")
+        tags_scroll.setStyleSheet(
+            "QScrollArea { background: palette(window); }")
         tags_content = QWidget()
         tags_content.setMinimumHeight(38)
-        tags_content.setStyleSheet("background: #f5f6f8;")
+        tags_content.setStyleSheet("background: palette(window);")
         tags_layout = QHBoxLayout(tags_content)
         tags_layout.setContentsMargins(1, 2, 1, 2)
         tags_layout.setSpacing(8)
@@ -204,12 +214,14 @@ class ExtensionManagerDialog(QDialog):
         tags_group = QButtonGroup(page)
         tags_group.setExclusive(True)
         tags_scroll.setWidget(tags_content)
-        page.setStyleSheet("background: #f5f6f8;")
+        page.setStyleSheet("background: palette(window);")
         page_layout.addWidget(tags_scroll)
 
-        status = QLabel()
-        status.setWordWrap(True)
-        page_layout.addWidget(status)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Plain)
+        divider.setStyleSheet("color: palette(midlight);")
+        page_layout.addWidget(divider)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -236,7 +248,7 @@ class ExtensionManagerDialog(QDialog):
             "tag": "",
             "reviewed": reviewed,
             "sort": sort,
-            "status": status,
+            "divider": divider,
             "scroll": scroll,
             "cards": cards,
             "grid": grid,
@@ -250,9 +262,8 @@ class ExtensionManagerDialog(QDialog):
         cached = load_cached_catalog()
         if cached is not None:
             self._apply_catalog(cached)
-        else:
-            self._active_page()["status"].setText(
-                tr("Loading extension catalog…"))
+        elif not self._extensions:
+            self._catalog_info.setText(tr("Loading extension catalog…"))
         self._refresh.setEnabled(False)
         worker = _CatalogTask()
         worker.signals.completed.connect(self._catalog_loaded)
@@ -286,12 +297,12 @@ class ExtensionManagerDialog(QDialog):
         if snapshot is not None:
             self._apply_catalog(snapshot)
         elif self._catalog_snapshot is None:
-            self._active_page()["status"].setText(
+            self._catalog_info.setText(
                 tr("Could not load extensions: {error}", error=str(error)))
             for key in self._pages:
                 self._clear_cards(key)
         else:
-            self._active_page()["status"].setText(tr(
+            self._catalog_info.setText(tr(
                 "Could not refresh catalog. Showing the last cached catalog "
                 "from {date}. {error}",
                 date=self._catalog_snapshot.fetched_at, error=str(error)))
@@ -338,11 +349,12 @@ class ExtensionManagerDialog(QDialog):
         button.setCheckable(True)
         button.setProperty("tag", tag)
         button.setStyleSheet(
-            "QToolButton { color: #344054; background: #ffffff; "
-            "border: 1px solid #d0d5dd; border-radius: 12px; "
+            "QToolButton { color: palette(text); background: palette(base); "
+            "border: 1px solid palette(midlight); border-radius: 12px; "
             "padding: 4px 10px; }"
-            "QToolButton:checked { background: #3584e4; color: white; "
-            "border-color: #3584e4; }")
+            "QToolButton:checked { background: palette(highlight); "
+            "color: palette(highlighted-text); "
+            "border-color: palette(highlight); }")
         button.clicked.connect(
             lambda _checked=False, page_key=key, selected=tag:
             self._select_tag(page_key, selected))
@@ -424,14 +436,14 @@ class ExtensionManagerDialog(QDialog):
         for index, extension in enumerate(extensions):
             row = self._make_row(extension, language, page["cards"], key)
             self._pages[key]["grid"].addWidget(row, index // 2, index % 2)
-        page["status"].setText(tr("{shown} of {total} extensions",
-                                  shown=len(extensions),
-                                  total=(sum(installed_info(e.id) is not None
-                                             for e in self._extensions)
-                                         if key == "installed"
-                                         else len(self._extensions)))
-                              + self._catalog_status_suffix())
         if key == self._active_page_key():
+            total = (sum(installed_info(e.id) is not None
+                         for e in self._extensions)
+                     if key == "installed" else len(self._extensions))
+            self._catalog_info.setText(
+                tr("{shown} of {total} extensions",
+                   shown=len(extensions), total=total)
+                + self._catalog_status_suffix())
             self._load_visible_images()
 
     def _on_tab_changed(self, _index: int) -> None:
@@ -456,10 +468,10 @@ class ExtensionManagerDialog(QDialog):
         row.setMaximumHeight(_ROW_MAX_HEIGHT)
         row.setMaximumWidth(_ROW_MAX_WIDTH)
         row.setStyleSheet(
-            "QWidget#extensionRow { background: #ffffff; "
-            "border: 1px solid #d9dee5; }"
+            "QWidget#extensionRow { background: palette(base); "
+            "border: 1px solid palette(midlight); }"
             "QWidget#extensionRow QLabel { background: transparent; "
-            "border: none; }")
+            "border: none; color: palette(text); }")
         row.setObjectName("extensionRow")
         row_layout = QVBoxLayout(row)
         row_layout.setContentsMargins(10, 10, 10, 8)
@@ -472,81 +484,103 @@ class ExtensionManagerDialog(QDialog):
         image.setAlignment(Qt.AlignCenter)
         image.setFixedSize(*_IMAGE_SIZE)
         image.setStyleSheet(
-            "background: #eef1f5; color: #667085; border: none;")
+            "background: palette(alternate-base); "
+            "color: palette(text); border: none;")
         self._pages[page_key]["image_labels"][extension.id] = image
 
-        image_column = QVBoxLayout()
+        image_details = QWidget()
+        image_details.setFixedWidth(_IMAGE_SIZE[0])
+        image_details.setAutoFillBackground(False)
+        image_details.setStyleSheet("background: transparent;")
+        image_column = QVBoxLayout(image_details)
+        image_column.setContentsMargins(0, 0, 0, 0)
         image_column.setSpacing(6)
         image_column.addWidget(image, 0, Qt.AlignTop)
+        author_row = QHBoxLayout()
+        author_row.setSpacing(6)
         byline = QLabel(tr("by {author}", author=extension.author))
-        byline.setStyleSheet("color: #667085; font-size: 11px")
-        image_column.addWidget(byline)
-        tags_row = QHBoxLayout()
-        tags_row.setSpacing(5)
+        byline.setWordWrap(True)
+        byline.setStyleSheet("color: palette(text); font-size: 13px")
+        author_row.addWidget(byline, 1)
+        repository = QPushButton(tr("Repository ↗"))
+        repository.setCursor(Qt.PointingHandCursor)
+        repository.setStyleSheet(
+            "QPushButton { color: palette(link); background: palette(base); "
+            "border: 1px solid palette(midlight); border-radius: 4px; "
+            "padding: 3px 7px; font-size: 11px; }"
+            "QPushButton:hover { color: palette(link); "
+            "background: palette(alternate-base); "
+            "border-color: palette(mid); }")
+        repository.clicked.connect(
+            lambda _checked=False, url=extension.repository:
+            QDesktopServices.openUrl(QUrl(url)))
+        author_row.addWidget(repository)
+        image_column.addLayout(author_row)
+        tags_row = FlowLayout(spacing=5)
         for tag in extension.tags:
             chip = QLabel(tr(tag.replace("-", " ").title()))
+            chip.setWordWrap(True)
+            chip.setMaximumWidth(_IMAGE_SIZE[0])
             chip.setStyleSheet(
-                "color: #1769aa; background: #e8f1fc; "
+                "color: palette(link); background: palette(alternate-base); "
                 "border-radius: 8px; padding: 2px 6px; font-size: 10px")
             tags_row.addWidget(chip)
-        tags_row.addStretch(1)
         image_column.addLayout(tags_row)
-        version = QLabel(tr("Version {version}", version=extension.version))
-        version.setStyleSheet(
-            "font-weight: bold; color: #344054; font-size: 11px")
-        image_column.addWidget(version)
-        metadata = QLabel(
-            f"{extension.license} · "
-            + tr("Tested with IngeTrazo {version}",
-                 version=extension.minimum_version))
-        metadata.setWordWrap(True)
-        metadata.setStyleSheet("color: #667085; font-size: 10px")
-        image_column.addWidget(metadata)
-        content.addLayout(image_column, 0)
+        license_label = QLabel(tr("License: {license}",
+                                  license=extension.license))
+        license_label.setWordWrap(True)
+        license_label.setStyleSheet(
+            "color: palette(text); font-weight: bold; font-size: 13px")
+        image_column.addWidget(license_label)
+        content.addWidget(image_details, 0, Qt.AlignTop)
 
         details = QVBoxLayout()
         details.setSpacing(5)
-        title_row = QHBoxLayout()
-        title = QLabel(display_name(extension, language))
-        title.setWordWrap(True)
-        title.setStyleSheet(
-            "font-weight: bold; font-size: 15px; color: #253247; "
-            "background: transparent;")
-        title_row.addWidget(title, 1)
+        version_row = QHBoxLayout()
+        version_row.addStretch(1)
+        versions = QLabel(
+            tr("v{version} · Tested with IngeTrazo {tested}",
+               version=extension.version, tested=extension.minimum_version))
+        versions.setStyleSheet(
+            "color: palette(text); font-size: 10px; font-weight: bold")
+        version_row.addWidget(versions, 0, Qt.AlignTop)
         if reviewed:
             badge = QLabel(tr("REVIEWED"))
             badge.setStyleSheet(
-                "color: #287a32; border: 1px solid #8ac78f; "
+                "color: palette(link); border: 1px solid palette(link); "
                 "border-radius: 3px; padding: 2px 5px; font-size: 9px; "
                 "font-weight: bold")
-            title_row.addWidget(badge, 0, Qt.AlignTop)
+            version_row.addWidget(badge, 0, Qt.AlignTop)
+        details.addLayout(version_row)
+
+        title_row = QHBoxLayout()
+        title = QLabel(display_name(extension, language))
+        title.setWordWrap(False)
+        title.setStyleSheet(
+            "font-weight: bold; font-size: 15px; color: palette(text); "
+            "background: transparent;")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
         details.addLayout(title_row)
 
         summary = QLabel(display_summary(extension, language))
         summary.setWordWrap(True)
         summary.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         summary.setMaximumHeight(100)
-        details.addWidget(summary, 1)
-        if managed:
-            if update_available:
-                state = tr("Update available: v{installed} → v{available}",
-                           installed=info.get("version", tr("unknown")),
-                           available=extension.version)
-            else:
-                state = tr("Up to date · v{version}",
-                           version=extension.version)
-            if not enabled:
-                state += " · " + tr("Disabled")
-            details.addWidget(QLabel(state))
-            if restart_required(extension.id, self._startup_state):
-                restart = QLabel(tr("Restart required to apply changes"))
-                restart.setStyleSheet(
-                    "color: #9a6700; font-weight: bold; font-size: 11px")
-                restart.setWordWrap(True)
-                details.addWidget(restart)
-        elif conflict:
-            details.addWidget(QLabel(
-                tr("A plugin with this ID already exists.")))
+        details.addWidget(summary)
+        if not reviewed:
+            community = QLabel(tr(
+                "Community extension — not reviewed by an IngeTrazo "
+                "maintainer."))
+            community.setWordWrap(True)
+            community.setStyleSheet("color: palette(link); font-size: 11px")
+            details.addWidget(community)
+        if restart_required(extension.id, self._startup_state):
+            restart = QLabel(tr("Restart required to apply changes"))
+            restart.setStyleSheet(
+                "color: palette(link); font-weight: bold; font-size: 11px")
+            restart.setWordWrap(True)
+            details.addWidget(restart)
         if not compatible:
             warning = QLabel(tr("Requires IngeTrazo {version} or later.",
                                 version=extension.minimum_version))
@@ -558,11 +592,12 @@ class ExtensionManagerDialog(QDialog):
                 "IngeTrazo {version}.",
                 version=extension.minimum_version))
             warning.setWordWrap(True)
-            warning.setStyleSheet("color: #9a6700;")
+            warning.setStyleSheet("color: palette(link);")
             details.addWidget(warning)
         if load_error:
             error_label = QLabel(tr("Failed to load at startup"))
-            error_label.setStyleSheet("color: #b42318; font-weight: bold;")
+            error_label.setStyleSheet(
+                "color: palette(bright-text); font-weight: bold;")
             details.addWidget(error_label)
             error_button = QPushButton(tr("View load error"))
             error_button.clicked.connect(
@@ -570,27 +605,44 @@ class ExtensionManagerDialog(QDialog):
                 self._show_load_error(e, failure))
             details.addWidget(error_button)
 
-        actions = QHBoxLayout()
-        install = QPushButton(
-            tr("Update") if update_available
-            else tr("Up to date") if managed
-            else tr("Download"))
-        install.setEnabled(compatible and not current and (managed or not conflict))
-        install.clicked.connect(
-            lambda _checked=False, e=extension: self._install(e))
-        actions.addWidget(install)
-        source = QPushButton(tr("Source code →"))
-        source.clicked.connect(
-            lambda _checked=False, url=extension.repository:
-            QDesktopServices.openUrl(QUrl(url)))
-        actions.addWidget(source)
+        details.addStretch(1)
         if managed:
-            toggle = QPushButton(tr("Disable") if enabled else tr("Enable"))
-            if load_error:
-                toggle.setText(tr("Disable extension"))
-            toggle.clicked.connect(
-                lambda _checked=False, e=extension: self._toggle(e))
-            actions.addWidget(toggle)
+            if update_available:
+                state = tr("Update available: v{installed} → v{available}",
+                           installed=info.get("version", tr("unknown")),
+                           available=extension.version)
+            else:
+                state = tr("Up to date · v{version}",
+                           version=extension.version)
+            if not enabled:
+                state += " · " + tr("Disabled")
+            details.addWidget(QLabel(state))
+        elif conflict:
+            details.addWidget(QLabel(
+                tr("A plugin with this ID already exists.")))
+
+        actions = QHBoxLayout()
+        if compatible:
+            install = QPushButton(
+                tr("Update") if update_available
+                else tr("Up to date") if managed
+                else tr("Download"))
+            install.setEnabled(not current and (managed or not conflict))
+            install.clicked.connect(
+                lambda _checked=False, e=extension: self._install(e))
+            actions.addWidget(install)
+        if managed:
+            if enabled or compatible:
+                toggle = QPushButton(tr("Disable") if enabled else tr("Enable"))
+                if load_error:
+                    toggle.setText(tr("Disable extension"))
+                toggle.clicked.connect(
+                    lambda _checked=False, e=extension: self._toggle(e))
+                actions.addWidget(toggle)
+            uninstall = QPushButton(tr("Uninstall"))
+            uninstall.clicked.connect(
+                lambda _checked=False, e=extension: self._uninstall(e))
+            actions.addWidget(uninstall)
         if load_error:
             folder_button = QPushButton(tr("Open extension folder"))
             folder_button.clicked.connect(
@@ -603,6 +655,7 @@ class ExtensionManagerDialog(QDialog):
         actions.addStretch(1)
         details.addLayout(actions)
         content.addLayout(details, 1)
+        content.setAlignment(details, Qt.AlignTop)
         row_layout.addLayout(content)
 
         return row
@@ -729,6 +782,26 @@ class ExtensionManagerDialog(QDialog):
             self, tr("Extension installed"),
             tr("«{name}» is installed. Restart IngeTrazo to load it.",
                name=display_name(extension, current_language())))
+        for key in self._pages:
+            self._render_page(key)
+
+    def _uninstall(self, extension: Extension) -> None:
+        answer = QMessageBox.question(
+            self, tr("Uninstall extension"),
+            tr("Uninstall «{name}»? Its files will be removed.",
+               name=display_name(extension, current_language())),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            uninstall_extension(extension.id)
+        except (ExtensionManagerError, OSError) as exc:
+            QMessageBox.warning(self, tr("Extension manager"), str(exc))
+            return
+        QMessageBox.information(
+            self, tr("Extension uninstalled"),
+            tr("«{name}» is uninstalled. Restart IngeTrazo to apply the "
+               "change.", name=display_name(extension, current_language())))
         for key in self._pages:
             self._render_page(key)
 
