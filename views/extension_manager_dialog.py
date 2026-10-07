@@ -266,7 +266,8 @@ class ExtensionManagerDialog(QDialog):
             self._catalog_info.setText(tr("Loading extension catalog…"))
         self._refresh.setEnabled(False)
         worker = _CatalogTask()
-        worker.signals.completed.connect(self._catalog_loaded)
+        worker.signals.completed.connect(
+            self._catalog_loaded, Qt.QueuedConnection)
         self._catalog_worker = worker
         QThreadPool.globalInstance().start(worker)
 
@@ -294,6 +295,8 @@ class ExtensionManagerDialog(QDialog):
             self._render_page(key)
 
     def _catalog_loaded(self, snapshot, error) -> None:
+        self._catalog_worker = None
+        self._refresh.setEnabled(True)
         if snapshot is not None:
             self._apply_catalog(snapshot)
         elif self._catalog_snapshot is None:
@@ -306,8 +309,6 @@ class ExtensionManagerDialog(QDialog):
                 "Could not refresh catalog. Showing the last cached catalog "
                 "from {date}. {error}",
                 date=self._catalog_snapshot.fetched_at, error=str(error)))
-        self._catalog_worker = None
-        self._refresh.setEnabled(True)
 
     def _active_page_key(self) -> str:
         return "browse" if self._tabs.currentIndex() == 0 else "installed"

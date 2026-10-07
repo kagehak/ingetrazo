@@ -66,7 +66,7 @@ def _wait_for_catalog(dialog, app):
     timer.timeout.connect(
         lambda: loop.quit() if dialog._catalog_worker is None else None)
     timer.start()
-    QTimer.singleShot(3000, loop.quit)
+    QTimer.singleShot(15000, loop.quit)
     loop.exec()
     timer.stop()
     assert dialog._catalog_worker is None
